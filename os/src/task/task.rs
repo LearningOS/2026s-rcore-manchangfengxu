@@ -8,7 +8,7 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
-
+const BIG_STRIDE: u64 = 1 << 32;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -34,8 +34,60 @@ impl TaskControlBlock {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
     }
+    ///
+    pub fn get_stride(&self) -> u64 {
+        self.inner_exclusive_access().stride_block.stride()
+    }
+    ///
+    pub fn increase_stride(&self) {
+        self.inner_exclusive_access().stride_block.increase_stride();
+    }
+    ///
+    pub fn set_priority(&self, prio: u64) -> bool {
+        self.inner_exclusive_access()
+            .stride_block
+            .set_priority(prio)
+    }
 }
 
+/// Stride scheduling block
+pub struct StrideBlock {
+    stride: u64,
+    priority: u64,
+    pass: u64,
+}
+
+impl StrideBlock {
+    pub fn new() -> Self {
+        let priority = 16u64;
+        Self {
+            stride: 0,
+            priority,
+            pass: BIG_STRIDE / priority,
+        }
+    }
+
+    pub fn stride(&self) -> u64 {
+        self.stride
+    }
+
+    pub fn pass(&self) -> u64 {
+        self.pass
+    }
+
+    pub fn increase_stride(&mut self) {
+        self.stride = self.stride.wrapping_add(self.pass);
+    }
+
+    pub fn set_priority(&mut self, priority: u64) -> bool {
+        if priority < 2 {
+            return false;
+        }
+        self.priority = priority;
+        self.pass = BIG_STRIDE / priority;
+        true
+    }
+}
 pub struct TaskControlBlockInner {
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
@@ -68,6 +120,9 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    /// Stride scheduling state
+    pub stride_block: StrideBlock,
 }
 
 impl TaskControlBlockInner {
@@ -118,6 +173,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride_block: StrideBlock::new(),
                 })
             },
         };
@@ -191,6 +247,7 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride_block: StrideBlock::new(),
                 })
             },
         });
@@ -205,7 +262,59 @@ impl TaskControlBlock {
         // **** release child PCB
         // ---- release parent PCB
     }
+    /// spawn a new child task from ELF
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        // ---- access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
 
+        // create fresh user space with elf program headers/trampoline/trap context/user stack
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: user_sp,
+                    program_brk: user_sp,
+                    stride_block: StrideBlock::new(),
+                })
+            },
+        });
+
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        drop(parent_inner);
+        // ---- release parent PCB
+
+        // prepare TrapContext in user space
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        task_control_block
+    }
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
