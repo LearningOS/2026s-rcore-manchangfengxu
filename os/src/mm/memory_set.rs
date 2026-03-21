@@ -63,12 +63,36 @@ impl MemorySet {
             None,
         );
     }
+    /// Insert a framed area, return -1 if there is a conflict.
+    pub fn insert_framed_area_no_panic(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) -> isize {
+        self.push_no_panic(
+            MapArea::new(start_va, end_va, MapType::Framed, permission),
+            None,
+        )
+    }
+    
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+    }
+    #[allow(unused)]
+    fn push_no_panic(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> isize {
+        if map_area.map_no_panic(&mut self.page_table) != 0 {
+            return -1;
+        }
+        if let Some(data) = data {
+            map_area.copy_data(&mut self.page_table, data);
+        }
+        self.areas.push(map_area);
+        0
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -262,6 +286,23 @@ impl MemorySet {
             false
         }
     }
+
+    /// Remove an existing mapped area whose range matches exactly `[start, end)`.
+    ///
+    /// Return `false` if there is no such area.
+    pub fn remove_area(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
+        let start_vpn = start.floor();
+        let end_vpn = end.ceil();
+        if let Some((idx, _)) = self.areas.iter().enumerate().find(|(_, area)| {
+            area.vpn_range.get_start() == start_vpn && area.vpn_range.get_end() == end_vpn
+        }) {
+            let mut area = self.areas.remove(idx);
+            area.unmap(&mut self.page_table);
+            true
+        } else {
+            false
+        }
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -303,6 +344,25 @@ impl MapArea {
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
+    fn map_one_no_panic(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
+        let ppn: PhysPageNum;
+        match self.map_type {
+            MapType::Identical => {
+                ppn = PhysPageNum(vpn.0);
+            }
+            MapType::Framed => {
+                let Some(frame) = frame_alloc() else {
+                    return -1;
+                };
+                ppn = frame.ppn;
+                self.data_frames.insert(vpn, frame);
+            }
+        }
+        let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        page_table.map(vpn, ppn, pte_flags);
+        0
+    }
+    #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
@@ -313,6 +373,15 @@ impl MapArea {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
+    }
+    #[allow(unused)]
+    fn map_no_panic(&mut self, page_table: &mut PageTable) -> isize {
+        for vpn in self.vpn_range {
+            if self.map_one_no_panic(page_table, vpn) != 0 {
+                return -1;
+            }
+        }
+        0
     }
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {

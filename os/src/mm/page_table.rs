@@ -179,3 +179,9 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+///
+pub fn find_pte(token: usize, ptr: *const u8) -> Option<PageTableEntry> {
+    let page_table = PageTable::from_token(token);
+    let vpn = VirtAddr::from(ptr as usize).floor();
+    page_table.translate(vpn)
+}

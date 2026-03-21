@@ -18,6 +18,7 @@ use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
+use core::cell::RefMut;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -71,6 +72,21 @@ lazy_static! {
 }
 
 impl TaskManager {
+
+    /// Get the current task id.
+    pub fn current_task_id(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        inner.current_task
+    }
+
+    /// Get the current task reference.
+    pub fn current_task(&self) -> RefMut<'_, TaskControlBlock> {
+        let inner = self.inner.exclusive_access();
+        let id = inner.current_task;
+        RefMut::map(inner, |inner| &mut inner.tasks[id])
+    }
+
+    
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
