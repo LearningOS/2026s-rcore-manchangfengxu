@@ -1,6 +1,6 @@
 //! File and filesystem-related syscalls
-use crate::fs::{open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
+use crate::fs::{open_file, OpenFlags, Stat, ROOT_INODE};
+use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
@@ -81,7 +81,19 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
         "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let Some(task) = current_task() else {
+        return -1;
+    };
+    let inner = task.inner_exclusive_access();
+    let Some(Some(file)) = inner.fd_table.get(_fd) else {
+        return -1;
+    };
+    let file = file.clone();
+    drop(inner);
+    let stat = translated_refmut(token, _st);
+    *stat = file.get_stat();
+    0
 }
 
 /// YOUR JOB: Implement linkat.
@@ -90,7 +102,14 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
         "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let old_path = translated_str(token, _old_name);
+    let new_path = translated_str(token, _new_name);
+    if path_exists(old_path.as_str()) && !path_exists(new_path.as_str()) {
+        ROOT_INODE.link_from_path(old_path.as_str(), new_path.as_str()) as isize
+    } else {
+        -1
+    }
 }
 
 /// YOUR JOB: Implement unlinkat.
@@ -99,5 +118,14 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
         "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _name);
+    let Some(_) = ROOT_INODE.unlink(path.as_str()) else {
+        return -1;
+    };
+    0
+}
+
+fn path_exists(path: &str) -> bool {
+    open_file(path, OpenFlags::RDONLY).is_some()
 }
