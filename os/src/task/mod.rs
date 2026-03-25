@@ -72,6 +72,10 @@ lazy_static! {
 }
 
 impl TaskManager {
+    ///
+    pub fn get_current_task(&self) -> usize {
+        self.inner.exclusive_access().current_task
+    }
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
