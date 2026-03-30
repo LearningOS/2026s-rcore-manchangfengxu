@@ -24,6 +24,7 @@ pub struct ProcessControlBlock {
 }
 
 /// Inner of Process Control Block
+#[allow(missing_docs)]
 pub struct ProcessControlBlockInner {
     /// is zombie?
     pub is_zombie: bool,
@@ -49,6 +50,12 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    pub deadlock_detect_enabled: bool,
+    pub mutex_owner: Vec<Option<usize>>,
+    pub mutex_waiting: Vec<Option<usize>>,
+    pub sem_total: Vec<usize>,
+    pub sem_alloc: Vec<Vec<usize>>,
+    pub sem_waiting: Vec<Option<usize>>,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +126,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect_enabled: false,
+                    mutex_owner: Vec::new(),
+                    mutex_waiting: Vec::new(),
+                    sem_total: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_waiting: Vec::new(),
                 })
             },
         });
@@ -215,6 +228,7 @@ impl ProcessControlBlock {
         trace!("kernel: fork");
         let mut parent = self.inner_exclusive_access();
         assert_eq!(parent.thread_count(), 1);
+        let deadlock_detect_enabled = parent.deadlock_detect_enabled;
         // clone parent's memory_set completely including trampoline/ustacks/trap_cxs
         let memory_set = MemorySet::from_existed_user(&parent.memory_set);
         // alloc a pid
@@ -245,6 +259,12 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect_enabled,
+                    mutex_owner: Vec::new(),
+                    mutex_waiting: Vec::new(),
+                    sem_total: Vec::new(),
+                    sem_alloc: Vec::new(),
+                    sem_waiting: Vec::new(),
                 })
             },
         });
